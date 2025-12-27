@@ -15,7 +15,6 @@ TOOLS = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    # CHANGE: Accept string to prevent "expected number" errors
                     "amount": {"type": "string", "description": "Amount to move (e.g. '50.00')"},
                     "from_account": {"type": "string", "enum": ["PNC Checking", "Capital One Checking", "Ally Savings"]},
                     "to_account": {"type": "string", "enum": ["PNC Checking", "Capital One Checking", "Ally Savings"]},
@@ -28,7 +27,12 @@ TOOLS = [
 ]
 
 def run_financial_analysis(bank, user_query):
-    financial_state = json.dumps(bank.get_data(), indent=2)
+    # Safely get data
+    try:
+        data = bank.get_data()
+        financial_state = json.dumps(data, indent=2)
+    except Exception as e:
+        return {"error": f"Failed to serialize bank data: {e}"}
 
     print("\n[Debug] Financial State sent to AI:")
     print(financial_state)
@@ -36,7 +40,9 @@ def run_financial_analysis(bank, user_query):
 
     if GROQ_API_KEY:
         try:
+            # Instantiate Client locally to avoid threading/loop issues
             client = Groq(api_key=GROQ_API_KEY)
+            
             messages = [
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": f"USER QUERY: {user_query}\n\nFINANCIAL DATA:\n{financial_state}"}
@@ -61,27 +67,24 @@ def run_financial_analysis(bank, user_query):
             if tool_calls:
                 for tool in tool_calls:
                     if tool.function.name == "transfer_funds":
-                        args = json.loads(tool.function.arguments)
-                        
-                        # ROBUSTNESS: Handle string or number input
-                        raw_amount = args.get("amount", 0)
                         try:
-                            amount = float(raw_amount)
-                        except ValueError:
-                            amount = 0.0
-                        
-                        print(f"[Debug] AI attempted tool call: Move ${amount} ({args.get('reason')})")
-
-                        if amount > 0:
-                            actions.append({
-                                "type": "TRANSFER",
-                                "amount": amount,
-                                "from": args.get("from_account"),
-                                "to": args.get("to_account"),
-                                "reason": args.get("reason")
-                            })
-                        else:
-                            print(f"[Debug] 🚫 Filtered out $0.00 transfer.")
+                            args = json.loads(tool.function.arguments)
+                            raw_amount = args.get("amount", 0)
+                            try:
+                                amount = float(raw_amount)
+                            except ValueError:
+                                amount = 0.0
+                            
+                            if amount > 0:
+                                actions.append({
+                                    "type": "TRANSFER",
+                                    "amount": amount,
+                                    "from": args.get("from_account"),
+                                    "to": args.get("to_account"),
+                                    "reason": args.get("reason")
+                                })
+                        except json.JSONDecodeError:
+                            print("[Debug] Failed to decode tool arguments")
 
             return {
                 "analysis": analysis_text,
@@ -89,6 +92,6 @@ def run_financial_analysis(bank, user_query):
             }
 
         except Exception as e:
-            return {"error": f"Groq Connection Failed: {e}", "raw": ""}
+            return {"error": f"Groq Connection Failed: {e}", "analysis": f"Error: {e}"}
     else:
-        return {"error": "No API Key found."}
+        return {"error": "No API Key found.", "analysis": "No API Key configured."}

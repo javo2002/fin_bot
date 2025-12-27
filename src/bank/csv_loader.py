@@ -2,8 +2,7 @@ import csv
 import os
 import logging
 from datetime import datetime
-from src.database import init_db, save_transaction, save_balance_snapshot, DB_NAME
-import sqlite3
+from src.database import init_db, save_transaction, save_balance_snapshot, clear_db
 
 # Initialize DB structure immediately
 init_db()
@@ -11,29 +10,24 @@ init_db()
 logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
 
 class CSVBank:
-    def __init__(self, pnc_file="pnc.csv", capone_file="capone.csv"):
+    def __init__(self, pnc_file="pnc.csv", capone_file="capone.csv", reset_db=False):
+        """
+        Initializes the CSV Bank Loader.
+        
+        Args:
+            pnc_file (str): Path to PNC CSV.
+            capone_file (str): Path to Capital One CSV.
+            reset_db (bool): If True, wipes the database before loading. 
+                             CRITICAL: Only set this to True on explicit user action (e.g. upload).
+        """
         self.accounts = {}
         self.pnc_path = pnc_file
         self.capone_path = capone_file
         
-        # RESET DB: Wipes the database to fix "Mixed Data" and "Zero Amount" issues from previous runs.
-        # This forces a clean reload from the CSVs every time the app restarts.
-        self._reset_db()
+        if reset_db:
+            clear_db()
         
         self.load_data()
-
-    def _reset_db(self):
-        """Clears all data to prevent duplicates or cross-contaminated accounts."""
-        try:
-            conn = sqlite3.connect(DB_NAME, check_same_thread=False)
-            c = conn.cursor()
-            c.execute("DELETE FROM transactions")
-            c.execute("DELETE FROM balance_history")
-            conn.commit()
-            conn.close()
-            logging.info("🧹 Database wiped for fresh reload.")
-        except Exception as e:
-            logging.warning(f"DB Reset failed: {e}")
 
     def load_data(self):
         # 1. Process PNC

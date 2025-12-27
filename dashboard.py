@@ -4,12 +4,13 @@ import plotly.express as px
 from src.bank.csv_loader import CSVBank
 from src.agent.core import run_financial_analysis
 from src.notifications.telegram_service import TelegramNotifier
-from src.utils.calendar_generator import create_transfer_reminders
-from src.database import get_net_worth_history, get_all_transactions
+from src.database import get_all_transactions
 from src.config import PLAID_CLIENT_ID
 
 # --- 1. CONFIGURATION ---
 st.set_page_config(page_title="Financial Architect", page_icon="▪️", layout="wide")
+
+# Initialize Notifier (safe init)
 notifier = TelegramNotifier()
 
 # Custom CSS for Premium UI
@@ -41,26 +42,22 @@ st.markdown("""
         background-color: #E0E0E0 !important;
         box-shadow: 0 4px 12px rgba(255,255,255,0.1);
     }
-
-    /* Chat Styling */
-    .stChatMessage { background-color: #161B22; border: 1px solid #30363D; border-radius: 8px; }
-    
-    /* Tables */
-    div[data-testid="stDataFrame"] { border: 1px solid #30363D; border-radius: 8px; }
 </style>
 """, unsafe_allow_html=True)
 
 # --- 2. DATA LOADING ---
+# Load existing files if they exist, but DO NOT RESET DB on simple reload
 if 'bank' not in st.session_state:
     if pd.io.common.file_exists("temp_pnc.csv"):
-        st.session_state.bank = CSVBank("temp_pnc.csv", "temp_capone.csv")
+        # reset_db=False ensures we don't wipe history on a page refresh
+        st.session_state.bank = CSVBank("temp_pnc.csv", "temp_capone.csv", reset_db=False)
     else:
         st.session_state.bank = None
 
 # --- 3. SIDEBAR ---
 with st.sidebar:
     st.header("Financial Architect")
-    st.caption("v3.2 • Database Inspector")
+    st.caption("v3.3 • Optimized")
     st.markdown("---")
     
     if PLAID_CLIENT_ID:
@@ -72,11 +69,16 @@ with st.sidebar:
         uploaded_pnc = st.file_uploader("PNC CSV", type=["csv"])
         uploaded_capone = st.file_uploader("Capital One CSV", type=["csv"])
         
+        # LOGIC: Only wipe the DB when the user actively uploads new data
         if uploaded_pnc and uploaded_capone:
-            with open("temp_pnc.csv", "wb") as f: f.write(uploaded_pnc.getbuffer())
-            with open("temp_capone.csv", "wb") as f: f.write(uploaded_capone.getbuffer())
-            st.session_state.bank = CSVBank("temp_pnc.csv", "temp_capone.csv")
-            st.rerun()
+            if st.button("Process & Update DB", type="primary"):
+                with open("temp_pnc.csv", "wb") as f: f.write(uploaded_pnc.getbuffer())
+                with open("temp_capone.csv", "wb") as f: f.write(uploaded_capone.getbuffer())
+                
+                # Explicitly reset DB here because user is providing fresh state
+                st.session_state.bank = CSVBank("temp_pnc.csv", "temp_capone.csv", reset_db=True)
+                st.success("Data uploaded and database refreshed!")
+                st.rerun()
 
     st.markdown("---")
     income = st.number_input("Monthly Income", value=6600, step=100)
@@ -87,10 +89,14 @@ if st.session_state.bank:
     bank = st.session_state.bank
     data = bank.get_data()
     
-    # Extract Data
-    pnc_bal = data["PNC Checking"]["balance"]
-    ally_bal = data["Ally Savings"]["balance"]
-    cap_bal = data["Capital One Checking"]["balance"]
+    # Extract Data (Robust get)
+    pnc = data.get("PNC Checking", {"balance": 0.0})
+    cap = data.get("Capital One Checking", {"balance": 0.0})
+    ally = data.get("Ally Savings", {"balance": 0.0})
+    
+    pnc_bal = pnc["balance"]
+    cap_bal = cap["balance"]
+    ally_bal = ally["balance"]
     
     # Top KPIS
     c1, c2, c3, c4 = st.columns(4)
@@ -115,7 +121,6 @@ if st.session_state.bank:
             
             if "analysis" in st.session_state and st.session_state.analysis:
                 res = st.session_state.analysis
-                # Render Clean Markdown
                 st.markdown(res.get("analysis", "No text generated."))
         
         with col_side:
@@ -140,27 +145,22 @@ if st.session_state.bank:
         st.subheader("Cash Flow Breakdown")
         
         # Prepare Data
-        pnc_tx = data["PNC Checking"]["transactions"]
-        cap_tx = data["Capital One Checking"]["transactions"]
+        pnc_tx = pnc.get("transactions", [])
+        cap_tx = cap.get("transactions", [])
         
         col_v1, col_v2 = st.columns(2)
         
-        # Helper for Charts
         def render_pie(txs, title, color_scale):
             if not txs:
-                st.warning(f"No data for {title}")
+                st.info(f"No data for {title}")
                 return
             
             df = pd.DataFrame(txs)
-            # Ensure Amount/Category exist
-            if 'amount' not in df.columns: 
-                st.error("Missing 'amount' column")
-                return
+            if 'amount' not in df.columns: return
             
-            # Filter Spending (Negative amounts usually)
-            # Adjust this logic if your CSV has positive amounts for spending
+            # Filter Spending
             spending = df.copy()
-            spending['amount'] = spending['amount'].abs() # Treat all flow as magnitude
+            spending['amount'] = spending['amount'].abs()
             
             fig = px.pie(spending, values='amount', names='category', title=title, 
                          color_discrete_sequence=getattr(px.colors.sequential, color_scale),
@@ -173,56 +173,35 @@ if st.session_state.bank:
         with col_v2:
             render_pie(cap_tx, "Capital One (Fun)", "Reds_r")
 
-    # --- TAB 3: DB INSPECTOR (UPDATED) ---
+    # --- TAB 3: DB INSPECTOR ---
     with tabs[2]:
         st.subheader("💾 Database Inspector")
-        st.markdown("Raw data stored in `financial_memory.db`, split by account.")
-        
         all_txs = get_all_transactions()
         
         if not all_txs.empty:
-            # Create sub-tabs for each bank account
-            # We get unique account names from the DB
             accounts = all_txs['account'].unique()
-            # Add an 'All' tab
-            tabs_list = ["All"] + list(accounts)
-            db_tabs = st.tabs(tabs_list)
+            db_tabs = st.tabs(["All"] + list(accounts))
             
-            # Filter Logic
-            search = st.text_input("🔍 Search Transactions (e.g. 'Netflix')", key="db_search")
+            search = st.text_input("🔍 Search Transactions", key="db_search")
             
-            # 1. ALL Tab
+            # ALL Tab
             with db_tabs[0]:
                 view_df = all_txs
                 if search:
                     view_df = view_df[view_df['description'].str.contains(search, case=False, na=False)]
                 
-                # Stats for All
-                k1, k2, k3 = st.columns(3)
-                k1.metric("Total Records", len(view_df))
-                k2.metric("Date Range", f"{view_df['date'].min()} to {view_df['date'].max()}")
-                k3.metric("Total Volume", f"${view_df['amount'].abs().sum():,.2f}")
-                
+                st.metric("Total Records", len(view_df))
                 st.dataframe(view_df, use_container_width=True)
 
-            # 2. Individual Account Tabs
+            # Account Tabs
             for i, acc_name in enumerate(accounts):
                 with db_tabs[i+1]:
-                    # Filter for specific account
                     acc_df = all_txs[all_txs['account'] == acc_name]
-                    
                     if search:
                         acc_df = acc_df[acc_df['description'].str.contains(search, case=False, na=False)]
                     
-                    # Stats for Account
-                    k1, k2, k3 = st.columns(3)
-                    k1.metric("Records", len(acc_df))
-                    if not acc_df.empty:
-                        k2.metric("Latest", acc_df['date'].max())
-                        k3.metric("Volume", f"${acc_df['amount'].abs().sum():,.2f}")
-                    
+                    st.metric("Records", len(acc_df))
                     st.dataframe(acc_df, use_container_width=True)
-
         else:
             st.info("Database is empty. Upload CSVs to populate.")
 
@@ -233,12 +212,10 @@ if st.session_state.bank:
         if "messages" not in st.session_state:
             st.session_state.messages = []
 
-        # Render History
         for msg in st.session_state.messages:
             with st.chat_message(msg["role"]):
                 st.markdown(msg["content"])
 
-        # Input
         if prompt := st.chat_input("Ask about your finances..."):
             st.session_state.messages.append({"role": "user", "content": prompt})
             with st.chat_message("user"):
@@ -248,7 +225,7 @@ if st.session_state.bank:
                 with st.spinner("Thinking..."):
                     ctx = f"Income: ${income}. Tax: {tax_pct}%. Contractor."
                     res = run_financial_analysis(bank, f"{prompt} Context: {ctx}")
-                    reply = res.get("analysis", "I'm not sure.")
+                    reply = res.get("analysis", "I couldn't analyze that.")
                     st.markdown(reply)
                     st.session_state.messages.append({"role": "assistant", "content": reply})
 
