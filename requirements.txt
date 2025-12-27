@@ -1,0 +1,10 @@
+groq
+python-dotenv
+streamlit
+pandas
+plotly
+requests
+ics
+pytest
+plaid-python
+flask

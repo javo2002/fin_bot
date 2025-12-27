@@ -1,0 +1,10 @@
+BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:ics.py - http://git.io/lLljaA
+BEGIN:VEVENT
+DESCRIPTION:Reason: Initial safety net funding\nFrom: Capital One Checking
+DTSTART:20251228T090000Z
+SUMMARY:💰 Move $100.77 -> PNC Checking
+UID:05c0612d-7a59-4c94-b24a-270d4b8e7193@05c0.org
+END:VEVENT
+END:VCALENDAR
